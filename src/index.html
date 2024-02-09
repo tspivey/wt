@@ -1,0 +1,206 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Web thing</title>
+  <link rel="shortcut icon" href="data:image/x-icon;," type="image/x-icon">
+</head>
+
+<body>
+  <button id="start" onclick="javascript:main()">Start</button>
+  <textarea id="box"></textarea>
+  <script>
+    "use strict";
+    window.onerror = function myErrorHandler(errorMsg, url, lineNumber) {
+      alert(msg);
+    }
+
+    async function main() {
+      document.getElementById("start").disabled = true;
+      let indexURL = "./";
+      // Set up the TTS
+      let voice = await initTTS();
+      TTS.say("1");
+
+      const { loadPyodide } = await import("./pyodide.mjs");
+      // to facilitate debugging
+      globalThis.loadPyodide = loadPyodide;
+
+      globalThis.pyodide = await loadPyodide({
+      });
+      console.log("loaded");
+      TTS.say("2");
+      await pyodide.loadPackage("micropip");
+      await pyodide.runPython(`
+import micropip
+micropip.install("pyte-0.8.1-py3-none-any.whl")
+`);
+      TTS.say("3");
+
+      pyodide.registerJsModule("tts", TTS);
+      // Get tdsr imported
+      let text = await (await fetch("tdsr")).text();
+      let cfg = await (await fetch("tdsr.cfg.dist")).text();
+      await pyodide.FS.writeFile("/tdsr.cfg.dist", cfg, { encoding: "utf8" });
+      pyodide.runPython(text);
+      var scheme;
+      if (window.location.protocol === "http:") {
+        scheme = "ws";
+      } else {
+        scheme = "wss";
+      }
+      globalThis.ws = new window.WebSocket(`${scheme}://${window.location.hostname}:8112/wtsocket`);
+      globalThis.ws.binaryType = "arraybuffer";
+      globalThis.ws.onopen = () => {
+        TTS.say("connected");
+      };
+      globalThis.ws.onmessage = (e) => {
+        pyodide.globals.get('process_terminal_output')(e.data);
+      };
+
+      setInterval(function () {
+        pyodide.globals.get("run_scheduled")();
+      }, 50);
+      let tb = document.getElementById("box");
+      tb.addEventListener('keydown', function (e) {
+        let result = kd(e);
+        if (!result) {
+          e.preventDefault();
+        }
+        return result;
+      }, true);
+      tb.onkeypress = kp;
+
+    }
+
+    function send_input(string) {
+      pyodide.globals.get("process_input")(string, 0);
+    }
+
+    function kd(e) {
+      //console.log(e);
+      // CTRL-letters
+      if (e.ctrlKey) {
+        if (e.keyCode >= 65 && e.keyCode < 90) {
+          send_input(String.fromCharCode(e.keyCode - 64));
+          return false;
+        }
+      }
+      else if (e.altKey) {
+        if (e.keyCode >= 65 && e.keyCode < 90) {
+          send_input("\x1b" + String.fromCharCode(e.keyCode + 32));
+          return false;
+        }
+        else if (e.key === ',') {
+          send_input("\x1b,");
+          return false;
+        }
+        else if (e.key === '.') {
+          send_input("\x1b.");
+          return false;
+        }
+
+      }
+      else if (e.keyCode == 13) {
+        send_input("\n");
+        return false;
+      }
+      else if (e.keyCode == 8) {
+        send_input("\x7f");
+        return false;
+      }
+      else if (e.key == 'Tab') {
+        send_input("\x09");
+        return false;
+      }
+      // left
+      else if (e.keyCode == 37) {
+        send_input("\x1b[D");
+        return false;
+      }
+      else if (e.keyCode == 39) {
+        send_input("\x1b[C");
+        return false;
+      }
+      else if (e.keyCode == 38) {
+        send_input("\x1b[A");
+        return false;
+      }
+      else if (e.keyCode == 40) {
+        send_input("\x1b[B");
+        return false;
+      }
+
+      else {
+      }
+      return true;
+    }
+
+    function kp(e) {
+      e.preventDefault();
+      if (e.charCode == 13)
+        return false;
+      if (e.charCode) {
+        let key = String.fromCharCode(e.charCode);
+        send_input(key);
+        return false;
+      }
+    }
+
+    var voices;
+    async function initTTS() {
+      var synth = window.speechSynthesis;
+      // https://stackoverflow.com/questions/66951019/async-await-promise-does-not-work-promiseresult-is-undefined
+      const getVoices = () => {
+        return new Promise(resolve => {
+          voices = synth.getVoices()
+          if (voices.length) {
+            resolve(voices)
+            return
+          }
+          console.log("Using voiceschanged");
+          const voiceschanged = () => {
+            voices = synth.getVoices()
+            resolve(voices)
+          }
+          speechSynthesis.onvoiceschanged = voiceschanged
+        })
+      }
+      voices = await getVoices();
+      voices = voices.filter((v) => { return v.lang === "en-US" || v.lang === "en-UK" });
+      console.log(`Found ${voices.length} voices, first one is ${voices[0].name}`);
+      return voices[0];
+    }
+
+    let TTS = {
+      voice: -1,
+      rate: 1.0,
+      say: function (text) {
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.lang = "en-US";
+        utterance.rate = this.rate;
+        if (this.voice !== -1) {
+          utterance.voice = voices[this.voice];
+        }
+        speechSynthesis.speak(utterance);
+      },
+      stop: function () {
+        speechSynthesis.cancel();
+      },
+      termsend: function (data) {
+        globalThis.ws.send(data.getBuffer().data);
+      },
+      set_rate: function (r) {
+        this.rate = r / 100.0;
+      },
+      set_voice: function (v) {
+        this.voice = v;
+      },
+    }
+    // Called by the button since we need user interaction for web speech to work
+    // main();
+  </script>
+</body>
+
+</html>
